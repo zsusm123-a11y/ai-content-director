@@ -30,7 +30,7 @@ export async function aiGenerateIdeas(account, options) {
     preferredStructure: raw.preferredStructure,
     status: "待评分",
     scoreHistory: [],
-    versions: [{ version: 1, title: raw.title, logline: raw.logline, reason: "OpenAI 初始版本", createdAt: now }],
+    versions: [{ version: 1, title: raw.title, logline: raw.logline, reason: "大模型初始版本", createdAt: now }],
     createdAt: now,
     updatedAt: now,
     ai: metadata(result),

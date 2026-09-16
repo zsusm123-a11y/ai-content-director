@@ -34,7 +34,7 @@ npm test
 
 ## 实现说明
 
-当前版本包含本地 Node.js 后端、SQLite 数据库和 OpenAI Responses API 集成。账号、选题、评分、项目、Beat、脚本和埋点会写入 `data/ai-content-director.db`。浏览器 `localStorage` 保留为后端不可用时的安全降级。
+当前版本包含本地 Node.js 后端、SQLite 数据库和国内大模型官方 API 集成。默认接入 DeepSeek 官方 OpenAI 兼容接口，并可通过环境变量切换到其他兼容服务。账号、选题、评分、项目、Beat、脚本和埋点会写入 `data/ai-content-director.db`。浏览器 `localStorage` 保留为后端不可用时的安全降级。
 
 ### 配置真实大模型
 
@@ -44,14 +44,18 @@ npm test
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，填入 OpenAI API Key：
+在 [DeepSeek 开放平台](https://platform.deepseek.com/api_keys) 创建 API Key，然后编辑 `.env`：
 
 ```dotenv
-OPENAI_API_KEY=你的_API_Key
-OPENAI_MODEL=gpt-5.6-luna
+AI_PROVIDER=deepseek
+AI_API_KEY=你的_DeepSeek_API_Key
+AI_BASE_URL=https://api.deepseek.com
+AI_MODEL=deepseek-v4-flash
 ```
 
-`.env` 已被 Git 忽略，不会进入提交。请不要把 API Key 写进前端代码、截图或聊天记录。可在 [OpenAI API Dashboard](https://platform.openai.com/api-keys) 创建和管理密钥。
+`.env` 已被 Git 忽略，不会进入提交。请不要把 API Key 写进前端代码、截图或聊天记录。模型请求只从本地 Node.js 后端发出，密钥不会发送给浏览器。
+
+如需切换其他国内厂商的官方 OpenAI 兼容接口，只需修改 `AI_PROVIDER`、`AI_BASE_URL`、`AI_MODEL` 和 `AI_API_KEY`。接口需支持 `/chat/completions` 与 `response_format: { "type": "json_object" }`。
 
 未配置密钥、网络不可用或模型调用失败时，系统自动使用 `src/domain.js` 中的本地可解释引擎，完整工作流仍可继续。
 
@@ -62,7 +66,7 @@ OPENAI_MODEL=gpt-5.6-luna
 - `PUT /api/state`：事务式保存完整工作区
 - `POST /api/ai/:task`：结构化大模型任务
 
-默认数据库路径可用 `DATABASE_PATH` 修改，默认模型可用 `OPENAI_MODEL` 修改。
+默认数据库路径可用 `DATABASE_PATH` 修改；模型供应商、地址和模型名分别使用 `AI_PROVIDER`、`AI_BASE_URL` 与 `AI_MODEL` 修改。
 
 ## 数据与隐私
 

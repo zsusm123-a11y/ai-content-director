@@ -5,7 +5,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createStateStore } from "./database.mjs";
-import { aiConfiguration, runAiTask } from "./openai.mjs";
+import { aiConfiguration, runAiTask } from "./ai-provider.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 loadEnv(join(root, ".env"));
@@ -63,7 +63,7 @@ async function handleApi(request, response, url) {
     const task = url.pathname.slice("/api/ai/".length);
     const body = await readJson(request);
     const result = await runAiTask(task, body);
-    json(response, 200, { ok: true, provider: "openai", ...result });
+    json(response, 200, { ok: true, ...result });
     return;
   }
   json(response, 404, { ok: false, error: { code: "NOT_FOUND", message: "API route not found" } });
@@ -139,7 +139,7 @@ server.listen(port, () => {
   const ai = aiConfiguration();
   console.log(`AI Content Director running at http://localhost:${port}`);
   console.log(`SQLite database: ${store.path}`);
-  console.log(`AI provider: ${ai.configured ? `${ai.provider}/${ai.model}` : "local fallback (OPENAI_API_KEY not configured)"}`);
+  console.log(`AI provider: ${ai.configured ? `${ai.provider}/${ai.model}` : "local fallback (AI_API_KEY not configured)"}`);
 });
 
 function shutdown() {

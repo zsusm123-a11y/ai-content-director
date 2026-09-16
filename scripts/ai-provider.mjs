@@ -1,4 +1,6 @@
-const MODEL = () => process.env.OPENAI_MODEL || "gpt-5.6-luna";
+const DEFAULT_PROVIDER = "deepseek";
+const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_MODEL = "deepseek-v4-flash";
 
 const string = { type: "string" };
 const stringArray = { type: "array", items: string };
@@ -146,14 +148,20 @@ const instructions = {
   generateScript: "你是短片编剧和制作导演。严格依据已确认Beat Sheet写正式中文脚本，保留时间段、画面、动作、对白或旁白、声音与制作提示。不要改变已确认的故事结构。严格返回结构化数据。",
 };
 
-export function aiConfiguration() {
-  return { configured: Boolean(process.env.OPENAI_API_KEY), model: MODEL(), provider: "openai" };
+export function aiConfiguration(env = process.env) {
+  const config = resolveConfiguration(env);
+  return {
+    configured: Boolean(config.apiKey),
+    model: config.model,
+    provider: config.provider,
+    baseUrl: config.baseUrl,
+  };
 }
 
 export async function runAiTask(task, payload) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    const error = new Error("OPENAI_API_KEY is not configured");
+  const config = resolveConfiguration(process.env);
+  if (!config.apiKey) {
+    const error = new Error("AI_API_KEY is not configured");
     error.code = "AI_NOT_CONFIGURED";
     throw error;
   }
@@ -161,33 +169,102 @@ export async function runAiTask(task, payload) {
   if (!definition) throw new Error(`Unknown AI task: ${task}`);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.OPENAI_TIMEOUT_MS || 60000));
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL(),
-        store: false,
-        instructions: instructions[task],
-        input: JSON.stringify(payload),
-        text: { format: { type: "json_schema", name: definition.name, strict: true, schema: definition.schema } },
-      }),
+      headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(buildRequest(task, payload, config)),
       signal: controller.signal,
     });
-    const body = await response.json();
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(body.error?.message || `OpenAI request failed with ${response.status}`);
+      const error = new Error(body.error?.message || `${config.provider} request failed with ${response.status}`);
       error.code = body.error?.code || "AI_REQUEST_FAILED";
       throw error;
     }
-    const outputText = body.output_text || body.output
-      ?.filter((item) => item.type === "message")
-      .flatMap((item) => item.content || [])
-      .find((item) => item.type === "output_text")?.text;
-    if (!outputText) throw new Error("OpenAI response did not contain output text");
-    return { data: JSON.parse(outputText), model: body.model || MODEL(), responseId: body.id };
+    const outputText = body.choices?.[0]?.message?.content;
+    if (!outputText) throw invalidResponse(`${config.provider} response did not contain message content`);
+    const data = parseJson(outputText);
+    validateSchema(data, definition.schema);
+    return { data, provider: config.provider, model: body.model || config.model, responseId: body.id };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function buildRequest(task, payload, config = resolveConfiguration(process.env)) {
+  const definition = schemas[task];
+  if (!definition) throw new Error(`Unknown AI task: ${task}`);
+  return {
+    model: config.model,
+    messages: [
+      {
+        role: "system",
+        content: `${instructions[task]}\n只输出一个有效 JSON 对象，不要输出 Markdown。JSON 必须符合以下 Schema：\n${JSON.stringify(definition.schema)}`,
+      },
+      { role: "user", content: JSON.stringify(payload) },
+    ],
+    response_format: { type: "json_object" },
+    max_tokens: config.maxTokens,
+    stream: false,
+  };
+}
+
+function resolveConfiguration(env) {
+  const provider = env.AI_PROVIDER?.trim() || DEFAULT_PROVIDER;
+  const baseUrl = (env.AI_BASE_URL?.trim() || env.DEEPSEEK_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  return {
+    provider,
+    baseUrl,
+    model: env.AI_MODEL?.trim() || env.DEEPSEEK_MODEL?.trim() || DEFAULT_MODEL,
+    apiKey: env.AI_API_KEY?.trim() || env.DEEPSEEK_API_KEY?.trim() || "",
+    timeoutMs: positiveInteger(env.AI_TIMEOUT_MS, 60000),
+    maxTokens: positiveInteger(env.AI_MAX_TOKENS, 8192),
+  };
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseJson(text) {
+  const normalized = String(text).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(normalized);
+  } catch {
+    throw invalidResponse("Model response was not valid JSON");
+  }
+}
+
+function validateSchema(value, schema, path = "$") {
+  if (schema.enum && !schema.enum.includes(value)) throw invalidResponse(`${path} must be one of ${schema.enum.join(", ")}`);
+  if (schema.type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidResponse(`${path} must be an object`);
+    for (const key of schema.required || []) {
+      if (!(key in value)) throw invalidResponse(`${path}.${key} is required`);
+    }
+    for (const [key, child] of Object.entries(schema.properties || {})) {
+      if (key in value) validateSchema(value[key], child, `${path}.${key}`);
+    }
+    return;
+  }
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) throw invalidResponse(`${path} must be an array`);
+    if (schema.minItems != null && value.length < schema.minItems) throw invalidResponse(`${path} has too few items`);
+    if (schema.maxItems != null && value.length > schema.maxItems) throw invalidResponse(`${path} has too many items`);
+    value.forEach((item, index) => validateSchema(item, schema.items, `${path}[${index}]`));
+    return;
+  }
+  if (schema.type === "string" && typeof value !== "string") throw invalidResponse(`${path} must be a string`);
+  if (schema.type === "integer") {
+    if (!Number.isInteger(value)) throw invalidResponse(`${path} must be an integer`);
+    if (schema.minimum != null && value < schema.minimum) throw invalidResponse(`${path} is below minimum`);
+    if (schema.maximum != null && value > schema.maximum) throw invalidResponse(`${path} exceeds maximum`);
+  }
+}
+
+function invalidResponse(message) {
+  return Object.assign(new Error(message), { code: "AI_RESPONSE_INVALID" });
 }

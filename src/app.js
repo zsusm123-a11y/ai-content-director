@@ -58,6 +58,15 @@ function notify(message) {
   notify.timer = setTimeout(() => toast.classList.remove("show"), 2400);
 }
 
+function providerLabel(provider) {
+  const labels = { deepseek: "DeepSeek", qwen: "通义千问", doubao: "豆包" };
+  return labels[provider] || provider || "大模型";
+}
+
+function engineLabel(provider) {
+  return provider === "local" ? "本地引擎" : providerLabel(provider);
+}
+
 function commit(message) {
   saveState(state);
   clearTimeout(persistenceTimer);
@@ -97,7 +106,7 @@ function render() {
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">A</span><div><strong>AI Content</strong><small>Director</small></div></div>
       <nav>${routes.map(([key, label, icon]) => `<a href="#/${key}" class="nav-link ${route === key ? "active" : ""}"><span>${icon}</span>${label}</a>`).join("")}</nav>
-      <div class="sidebar-note"><span class="pulse ${runtime.ai?.configured ? "online" : "fallback"}"></span><div><strong>${runtime.ai?.configured ? h(runtime.ai.model) : "本地降级引擎"}</strong><small>${runtime.backendReady ? "SQLite 已连接 · 自动保存" : "浏览器存储 · 等待后端"}</small></div></div>
+      <div class="sidebar-note"><span class="pulse ${runtime.ai?.configured ? "online" : "fallback"}"></span><div><strong>${runtime.ai?.configured ? `${h(providerLabel(runtime.ai.provider))} · ${h(runtime.ai.model)}` : "本地降级引擎"}</strong><small>${runtime.backendReady ? "SQLite 已连接 · 自动保存" : "浏览器存储 · 等待后端"}</small></div></div>
     </aside>
     <main class="main"><div class="topbar"><span>${h(state.account.brandName || "未命名账号")}</span><span class="topbar-date">${new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(new Date())}</span></div>${renderRoute(route)}</main>
   </div>`;
@@ -249,7 +258,7 @@ function renderEvaluation() {
     <button class="back-button" data-close-idea>← 返回选题池</button>
     ${pageHeader("P3 评分与 P4 优化", idea.title, idea.logline, `<span class="status-badge">${h(idea.status)}</span>`)}
     ${score ? `<div class="evaluation-grid">
-      <section class="score-summary panel"><div class="big-score ${scoreClass(score.total)}"><strong>${score.total}</strong><span>/ 100</span></div><div><p class="eyebrow">一句话判断</p><h2>${h(score.verdict)}</h2><p>强项：${h(score.diagnosis.strengths.join("、"))}。${h(score.diagnosis.risk)}</p>${score.ai ? `<span class="engine-badge">OpenAI · ${h(score.ai.model)}</span>` : `<span class="engine-badge local">本地可解释引擎</span>`}${previous ? `<div class="change-summary"><p class="delta ${score.delta >= 0 ? "positive" : "negative"}">较上一版 ${score.delta >= 0 ? "+" : ""}${score.delta} 分</p>${score.changes.length ? `<div class="change-list">${score.changes.map((item) => `<span>${h(item.label)} ${item.delta > 0 ? "+" : ""}${item.delta}</span>`).join("")}</div>` : `<span class="no-change">各维度暂未变化，可继续优化核心短板。</span>`}</div>` : ""}</div></section>
+      <section class="score-summary panel"><div class="big-score ${scoreClass(score.total)}"><strong>${score.total}</strong><span>/ 100</span></div><div><p class="eyebrow">一句话判断</p><h2>${h(score.verdict)}</h2><p>强项：${h(score.diagnosis.strengths.join("、"))}。${h(score.diagnosis.risk)}</p>${score.ai ? `<span class="engine-badge">${h(providerLabel(score.ai.provider))} · ${h(score.ai.model)}</span>` : `<span class="engine-badge local">本地可解释引擎</span>`}${previous ? `<div class="change-summary"><p class="delta ${score.delta >= 0 ? "positive" : "negative"}">较上一版 ${score.delta >= 0 ? "+" : ""}${score.delta} 分</p>${score.changes.length ? `<div class="change-list">${score.changes.map((item) => `<span>${h(item.label)} ${item.delta > 0 ? "+" : ""}${item.delta}</span>`).join("")}</div>` : `<span class="no-change">各维度暂未变化，可继续优化核心短板。</span>`}</div>` : ""}</div></section>
       <section class="panel score-details"><div class="panel-head"><div><p class="eyebrow">10维公开评分</p><h2>分数从哪里来</h2></div><button class="button compact secondary" data-score-idea="${idea.id}">重新评分</button></div>${score.details.map((detail) => `<article class="dimension"><div class="dimension-head"><span>${h(detail.label)}</span><strong>${detail.value}<small>/${detail.max}</small></strong></div><div class="bar"><i style="width:${Math.round(detail.value / detail.max * 100)}%"></i></div><p>${h(detail.reason)}</p></article>`).join("")}</section>
       <section class="panel optimize-panel"><div class="panel-head"><div><p class="eyebrow">优化建议</p><h2>先改短板，再重评</h2></div></div><div class="optimization-list">${score.optimizations.map((item, index) => `<article><span>0${index + 1}</span><div><h3>${h(item.title)}</h3><p>${h(item.description)}</p></div><button class="button compact light" data-optimize="${h(item.id)}">应用并重评</button></article>`).join("")}</div></section>
       <section class="panel version-panel"><div class="panel-head"><div><p class="eyebrow">版本历史</p><h2>可查看、可回退</h2></div></div><div class="timeline">${[...(idea.versions || [])].reverse().map((version) => `<article><span>V${version.version}</span><div><strong>${h(version.reason)}</strong><p>${h(version.logline)}</p><small>${formatDate(version.createdAt)}</small></div>${version.version !== idea.versions.length ? `<button class="text-button" data-restore-version="${version.version}">恢复</button>` : ""}</article>`).join("")}</div></section>
@@ -315,9 +324,9 @@ async function withAiFallback(progressMessage, aiWork, localWork) {
   notify(progressMessage);
   if (runtime.ai?.configured) {
     try {
-      return { value: await aiWork(), provider: "openai" };
+      return { value: await aiWork(), provider: runtime.ai.provider || "ai" };
     } catch (error) {
-      console.warn("OpenAI request failed; using local fallback", error);
+      console.warn("Model request failed; using local fallback", error);
       runtime.lastAiError = error.message;
     }
   }
@@ -364,7 +373,7 @@ document.addEventListener("submit", async (event) => {
     const ideas = result.value;
     state.ideas.push(...ideas);
     ideas.forEach((idea) => track(state, "create_idea", { ideaId: idea.id, source: "AI生成" }));
-    commit(`已由${result.provider === "openai" ? "真实大模型" : "本地引擎"}生成 ${ideas.length} 条选题`);
+    commit(`已由${engineLabel(result.provider)}生成 ${ideas.length} 条选题`);
     navigate("pool");
   }
   if (form.id === "manual-form") {
@@ -381,7 +390,7 @@ document.addEventListener("submit", async (event) => {
     state.selectedIdeaId = idea.id;
     track(state, "create_idea", { ideaId: idea.id, source: "手动" });
     track(state, "score_idea", { ideaId: idea.id, total: score.total });
-    commit(`想法已保存并由${result.provider === "openai" ? "真实大模型" : "本地引擎"}完成评分`);
+    commit(`想法已保存并由${engineLabel(result.provider)}完成评分`);
     navigate("pool");
   }
   if (form.id === "project-form") saveProjectForm(form, data);
@@ -418,7 +427,7 @@ async function handleScore(id) {
   idea.updatedAt = score.createdAt;
   state.selectedIdeaId = id;
   track(state, previous ? "rescore_after_optimize" : "score_idea", { ideaId: id, total: score.total, delta: score.delta });
-  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}评分完成：${score.total} 分`);
+  commit(`${engineLabel(result.provider)}评分完成：${score.total} 分`);
 }
 
 async function handleOptimize(optimizationId) {
@@ -507,7 +516,7 @@ async function handleGenerateBeats() {
   project.beatsConfirmed = false;
   project.updatedAt = new Date().toISOString();
   track(state, "generate_beats", { projectId: project.id, count: project.beats.length });
-  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}已生成 ${project.beats.length} 个 Beat`);
+  commit(`${engineLabel(result.provider)}已生成 ${project.beats.length} 个 Beat`);
 }
 
 function handleAddBeat() {
@@ -557,7 +566,7 @@ async function handleGenerateScript() {
   project.scriptVersions.push(script);
   project.updatedAt = script.createdAt;
   track(state, "generate_script", { projectId: project.id, version: script.version });
-  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}脚本 V${script.version} 已生成`);
+  commit(`${engineLabel(result.provider)}脚本 V${script.version} 已生成`);
 }
 
 function saveScriptForm(form, data) {
