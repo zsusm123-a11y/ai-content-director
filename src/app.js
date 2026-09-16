@@ -30,7 +30,7 @@ import { loadState, saveState, track } from "./store.js";
 const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 let state = loadState();
-let runtime = { backendReady: false, database: null, ai: { configured: false, model: "本地引擎" } };
+let runtime = { backendReady: false, database: null, ai: { configured: false, model: "本地引擎" }, videoAnalysis: { configured: false } };
 let persistenceTimer = null;
 let trendFeed = { status: "idle", items: [], fetchedAt: null, updatedAt: null, error: "" };
 let trendSelection = new Set();
@@ -67,7 +67,7 @@ function notify(message) {
 }
 
 function providerLabel(provider) {
-  const labels = { deepseek: "DeepSeek", qwen: "通义千问", doubao: "豆包" };
+  const labels = { deepseek: "DeepSeek", qwen: "通义千问", doubao: "豆包", bailian: "阿里云百炼" };
   return labels[provider] || provider || "大模型";
 }
 
@@ -255,13 +255,12 @@ function renderGenerate() {
       </section>
     </div>
     <section class="panel form-panel viral-lab">
-      <div class="panel-head"><div><p class="eyebrow">爆款拆解</p><h2>逐镜拉片分析</h2><p class="page-description">填写视频链接，并提供时间码字幕或画面观察，生成逐镜头拆解。</p></div></div>
-      <div class="notice-box">仅粘贴链接无法观看视频。请把字幕/口播和画面按时间顺序写在下方；模型只分析你提供的材料，不会自动读取抖音视频。</div>
+      <div class="panel-head"><div><p class="eyebrow">百炼多模态分析</p><h2>逐镜拉片分析</h2><p class="page-description">只需粘贴视频链接，自动拆解画面、声音、节奏与留存机制。</p></div></div>
+      <div class="notice-box">百炼会直接读取链接中的视频。链接必须能被百炼服务端访问并返回视频内容；普通抖音分享页不一定是视频文件直链，若无法读取，需要获授权的解析/媒资接口。</div>
       <form id="viral-analysis-form" class="viral-analysis-form">
-        <div class="form-grid two"><label>视频标题<input name="title" placeholder="便于回看，例如：30秒讲清一个反转故事" /></label><label>抖音视频链接<input name="videoUrl" type="url" placeholder="https://v.douyin.com/..." required /></label></div>
-        <div class="form-grid two"><label>视频时长（秒）<input name="duration" type="number" min="1" max="600" placeholder="例如 35" /></label><label>分析重点<select name="analysisFocus"><option>完整拉片</option><option>开场钩子与前三秒</option><option>镜头节奏与剪辑</option><option>叙事结构与反转</option><option>字幕、配音与音效</option></select></label></div>
-        <label>时间码字幕 / 画面描述<textarea name="materials" rows="7" minlength="40" maxlength="12000" required placeholder="按顺序粘贴字幕或描述画面，尽量包含时间码、景别、人物动作、字幕/口播和音效。&#10;00:00-00:03 近景：人物盯着镜头说“……”；急促切入，屏幕字幕……&#10;00:03-00:08 中景：……&#10;00:08-00:15 画面转为……"></textarea></label>
-        <div class="form-actions"><small>${runtime.ai?.configured ? `当前模型：${h(providerLabel(runtime.ai.provider))} / ${h(runtime.ai.model)}` : "请先在 .env 配置可用的大模型 API，拉片分析需要模型服务"}</small><button class="button primary" type="submit" ${runtime.ai?.configured ? "" : "disabled"}>${viralAnalysisBusy ? "正在分析…" : "开始拉片分析"}</button></div>
+        <label>抖音视频链接<input name="videoUrl" type="url" placeholder="粘贴抖音分享链接或可访问的视频直链" required /></label>
+        <div class="form-grid two"><label>视频标题（可选）<input name="title" placeholder="留空时由模型根据视频概括" /></label><label>分析重点<select name="analysisFocus"><option>完整拉片</option><option>开场钩子与前三秒</option><option>镜头节奏与剪辑</option><option>叙事结构与反转</option><option>字幕、配音与音效</option></select></label></div>
+        <div class="form-actions"><small>${runtime.videoAnalysis?.configured ? `百炼视频模型：${h(runtime.videoAnalysis.model)}` : "请在 .env 配置百炼 API Key 后使用"}</small><button class="button primary" type="submit" ${runtime.videoAnalysis?.configured ? "" : "disabled"}>${viralAnalysisBusy ? "正在读取并分析视频…" : "开始拉片分析"}</button></div>
       </form>
     </section>
     ${renderViralAnalyses()}
@@ -439,19 +438,17 @@ document.addEventListener("submit", async (event) => {
   const form = event.target;
   const data = new FormData(form);
   if (form.id === "viral-analysis-form") {
-    if (!runtime.ai?.configured) { notify("请先在 .env 配置大模型 API"); return; }
+    if (!runtime.videoAnalysis?.configured) { notify("请先在 .env 配置百炼视频分析 API"); return; }
     viralAnalysisBusy = true;
     render();
     try {
       const input = {
         title: String(data.get("title") || "").trim(),
         videoUrl: String(data.get("videoUrl") || "").trim(),
-        duration: String(data.get("duration") || "").trim(),
         analysisFocus: String(data.get("analysisFocus") || "完整拉片"),
-        materials: String(data.get("materials") || "").trim(),
       };
       const analysis = await aiAnalyzeViralVideo(input);
-      const record = { id: createId("analysis"), ...input, ...analysis, createdAt: new Date().toISOString() };
+      const record = { id: createId("analysis"), ...input, ...analysis, title: input.title || analysis.summary.slice(0, 48), createdAt: new Date().toISOString() };
       state.viralAnalyses ||= [];
       state.viralAnalyses.push(record);
       track(state, "analyze_viral_video", { analysisId: record.id, shotCount: record.shots.length });
@@ -460,7 +457,8 @@ document.addEventListener("submit", async (event) => {
     } catch (error) {
       viralAnalysisBusy = false;
       render();
-      notify(`拉片分析失败：${error.message}`);
+      const linkHint = /video|url|media|resource|视频|链接/i.test(`${error.code || ""} ${error.message}`) ? "；请确认百炼能公开访问该视频链接，抖音分享页可能不是视频直链" : "";
+      notify(`拉片分析失败：${error.message}${linkHint}`);
     }
     return;
   }
@@ -811,7 +809,7 @@ initializeBackend();
 async function initializeBackend() {
   try {
     const backend = await loadBackend();
-    runtime = { backendReady: true, database: backend.config.database, ai: backend.config.ai };
+    runtime = { backendReady: true, database: backend.config.database, ai: backend.config.ai, videoAnalysis: backend.config.ai.videoAnalysis };
     if (backend.state) {
       const local = loadState();
       state = { ...local, ...backend.state, account: backend.state.account || local.account };

@@ -1,6 +1,8 @@
 const DEFAULT_PROVIDER = "deepseek";
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-flash";
+const DEFAULT_BAILIAN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const DEFAULT_BAILIAN_VIDEO_MODEL = "qwen3.5-omni-plus";
 
 const string = { type: "string" };
 const stringArray = { type: "array", items: string };
@@ -171,20 +173,28 @@ const instructions = {
   createProject: "你是创意导演。把通过评分的选题转为可执行立项卡，推荐独立的时长等级、制作等级和五类叙事结构。商业母题必须服务故事。严格返回结构化数据。",
   generateBeats: "你是短片编剧。根据立项卡、叙事结构和目标时长生成5到8个节拍，持续升级冲突，避免解释设定。所有duration相加应接近目标秒数。严格返回结构化数据。",
   generateScript: "你是短片编剧和制作导演。严格依据已确认Beat Sheet写正式中文脚本，保留时间段、画面、动作、对白或旁白、声音与制作提示。不要改变已确认的故事结构。严格返回结构化数据。",
-  analyzeViralVideo: "你是短视频导演与剪辑分析师。对用户提供的逐段字幕、画面描述和时间码进行拉片分析，拆成3到16个连续镜头，逐镜说明画面、景别/运镜、动作、声音/字幕、叙事功能和留存作用。分析开场钩子、结构节奏、留存机制、可迁移手法与不可照搬的部分。只依据输入材料；不可声称已观看链接视频，不可编造画面、台词、时间码、播放数据。没有明确时间码时使用“镜头1/镜头2”等顺序编号，并在总结说明分析依据有限。只输出符合Schema的JSON。",
+  analyzeViralVideo: "你是短视频导演与剪辑分析师。你将直接收到完整视频作为多模态输入，必须实际分析视频画面和音轨，拆成3到16个连续镜头。逐镜说明时间范围、画面、景别/运镜、动作、实际听到的声音/台词/字幕、叙事功能和留存作用。分析开场钩子、结构节奏、留存机制、可迁移手法与不可照搬的部分。时间范围应依据视频真实时间轴；听不清或无法辨认时明确写无法辨认，不得编造。不得虚构播放数据。只输出符合Schema的JSON。",
 };
 
 export function aiConfiguration(env = process.env) {
   const config = resolveConfiguration(env);
+  const video = resolveBailianConfiguration(env);
   return {
     configured: Boolean(config.apiKey),
     model: config.model,
     provider: config.provider,
     baseUrl: config.baseUrl,
+    videoAnalysis: {
+      configured: Boolean(video.apiKey),
+      provider: "bailian",
+      model: video.model,
+      baseUrl: video.baseUrl,
+    },
   };
 }
 
 export async function runAiTask(task, payload) {
+  if (task === "analyzeViralVideo") return runBailianVideoAnalysis(payload);
   const config = resolveConfiguration(process.env);
   if (!config.apiKey) {
     const error = new Error("AI_API_KEY is not configured");
@@ -219,6 +229,100 @@ export async function runAiTask(task, payload) {
   }
 }
 
+async function runBailianVideoAnalysis(payload) {
+  const config = resolveBailianConfiguration(process.env);
+  if (!config.apiKey) {
+    const error = new Error("BAILIAN_API_KEY is not configured");
+    error.code = "BAILIAN_NOT_CONFIGURED";
+    throw error;
+  }
+  const definition = schemas.analyzeViralVideo;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  try {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(buildBailianVideoRequest(payload, config)),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const error = new Error(body.error?.message || `百炼视频分析请求失败 (${response.status})`);
+      error.code = body.error?.code || "BAILIAN_VIDEO_REQUEST_FAILED";
+      throw error;
+    }
+    const outputText = await readStreamedText(response);
+    const data = parseJson(outputText);
+    validateSchema(data, definition.schema);
+    return { data, provider: "bailian", model: config.model };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export function buildBailianVideoRequest(payload, config = resolveBailianConfiguration(process.env)) {
+  const videoUrl = String(payload.videoUrl || "").trim();
+  let parsedUrl;
+  try { parsedUrl = new URL(videoUrl); } catch { throw Object.assign(new Error("请填写有效的视频 URL"), { code: "INVALID_VIDEO_URL" }); }
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) throw Object.assign(new Error("视频 URL 必须使用 HTTP 或 HTTPS"), { code: "INVALID_VIDEO_URL" });
+  const taskPrompt = `${instructions.analyzeViralVideo}\n分析重点：${payload.analysisFocus || "完整拉片"}\n视频标题：${payload.title || "未提供"}\n视频时长（秒）：${payload.duration || "请根据视频判断"}\n请按以下 JSON Schema 输出且只输出 JSON：\n${JSON.stringify(schemas.analyzeViralVideo.schema)}`;
+  return {
+    model: config.model,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "video_url", video_url: { url: videoUrl, fps: 1 } },
+        { type: "text", text: taskPrompt },
+      ],
+    }],
+    response_format: { type: "json_object" },
+    max_tokens: config.maxTokens,
+    stream: true,
+    stream_options: { include_usage: true },
+    modalities: ["text"],
+  };
+}
+
+async function readStreamedText(response) {
+  const reader = response.body?.getReader();
+  if (!reader) throw invalidResponse("百炼未返回流式响应");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const chunk = line.slice(5).trim();
+      if (!chunk || chunk === "[DONE]") continue;
+      try {
+        const event = JSON.parse(chunk);
+        const delta = event.choices?.[0]?.delta?.content;
+        if (typeof delta === "string") content += delta;
+        else if (Array.isArray(delta)) content += delta.map((part) => part.text || "").join("");
+      } catch { /* Ignore non-JSON SSE comment lines. */ }
+    }
+    if (done) break;
+  }
+  if (buffer.startsWith("data:")) {
+    const chunk = buffer.slice(5).trim();
+    if (chunk && chunk !== "[DONE]") {
+      try {
+        const event = JSON.parse(chunk);
+        const delta = event.choices?.[0]?.delta?.content;
+        if (typeof delta === "string") content += delta;
+        else if (Array.isArray(delta)) content += delta.map((part) => part.text || "").join("");
+      } catch { /* Ignore incomplete final SSE lines. */ }
+    }
+  }
+  if (!content.trim()) throw invalidResponse("百炼没有返回分析文本");
+  return content;
+}
+
 export function buildRequest(task, payload, config = resolveConfiguration(process.env)) {
   const definition = schemas[task];
   if (!definition) throw new Error(`Unknown AI task: ${task}`);
@@ -250,6 +354,16 @@ function resolveConfiguration(env) {
     apiKey: env.AI_API_KEY?.trim() || env.DEEPSEEK_API_KEY?.trim() || "",
     timeoutMs: positiveInteger(env.AI_TIMEOUT_MS, 60000),
     maxTokens: positiveInteger(env.AI_MAX_TOKENS, 8192),
+  };
+}
+
+function resolveBailianConfiguration(env) {
+  return {
+    apiKey: env.BAILIAN_API_KEY?.trim() || "",
+    baseUrl: (env.BAILIAN_BASE_URL?.trim() || DEFAULT_BAILIAN_BASE_URL).replace(/\/+$/, ""),
+    model: env.BAILIAN_VIDEO_MODEL?.trim() || DEFAULT_BAILIAN_VIDEO_MODEL,
+    timeoutMs: positiveInteger(env.BAILIAN_TIMEOUT_MS, 300000),
+    maxTokens: positiveInteger(env.BAILIAN_MAX_TOKENS, 8192),
   };
 }
 

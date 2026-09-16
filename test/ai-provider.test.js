@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { aiConfiguration, buildRequest } from "../scripts/ai-provider.mjs";
+import { aiConfiguration, buildBailianVideoRequest, buildRequest } from "../scripts/ai-provider.mjs";
 
 test("defaults to the official DeepSeek-compatible endpoint", () => {
   const config = aiConfiguration({});
@@ -10,6 +10,12 @@ test("defaults to the official DeepSeek-compatible endpoint", () => {
     provider: "deepseek",
     model: "deepseek-v4-flash",
     baseUrl: "https://api.deepseek.com",
+    videoAnalysis: {
+      configured: false,
+      provider: "bailian",
+      model: "qwen3.5-omni-plus",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
   });
 });
 
@@ -25,6 +31,26 @@ test("accepts a domestic OpenAI-compatible provider configuration", () => {
     provider: "custom-cn",
     model: "model-name",
     baseUrl: "https://model.example.cn/v1",
+    videoAnalysis: {
+      configured: false,
+      provider: "bailian",
+      model: "qwen3.5-omni-plus",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    },
+  });
+});
+
+test("reports independent Bailian video-analysis configuration", () => {
+  const config = aiConfiguration({
+    BAILIAN_API_KEY: "video-key",
+    BAILIAN_BASE_URL: "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/",
+    BAILIAN_VIDEO_MODEL: "qwen3.5-omni-plus",
+  });
+  assert.deepEqual(config.videoAnalysis, {
+    configured: true,
+    provider: "bailian",
+    model: "qwen3.5-omni-plus",
+    baseUrl: "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
   });
 });
 
@@ -54,15 +80,22 @@ test("adds trend and creator-provided viral observations as generation context",
   assert.match(request.messages[1].content, /开头用倒计时留住观众/);
 });
 
-test("builds a grounded shot-by-shot viral video analysis request", () => {
-  const request = buildRequest("analyzeViralVideo", {
+test("builds a link-only multimodal Bailian video analysis request", () => {
+  const request = buildBailianVideoRequest({
     videoUrl: "https://v.douyin.com/example/",
     title: "反转短片",
-    duration: "35",
     analysisFocus: "镜头节奏与剪辑",
-    materials: "00:00-00:03 近景：人物直视镜头并抛出问题。\n00:03-00:08 切到门外脚步声。\n00:08-00:15 人物发现桌上照片。",
-  }, { model: "deepseek-v4-flash", maxTokens: 4096 });
-  assert.match(request.messages[0].content, /不可声称已观看链接视频/);
-  assert.match(request.messages[0].content, /retentionPoint/);
-  assert.match(request.messages[1].content, /00:03-00:08/);
+  }, { model: "qwen3.5-omni-plus", maxTokens: 4096 });
+  assert.equal(request.stream, true);
+  assert.deepEqual(request.modalities, ["text"]);
+  assert.deepEqual(request.messages[0].content[0], {
+    type: "video_url",
+    video_url: { url: "https://v.douyin.com/example/", fps: 1 },
+  });
+  assert.match(request.messages[0].content[1].text, /必须实际分析视频画面和音轨/);
+  assert.match(request.messages[0].content[1].text, /retentionPoint/);
+});
+
+test("rejects non-HTTP video inputs for Bailian analysis", () => {
+  assert.throws(() => buildBailianVideoRequest({ videoUrl: "javascript:alert(1)" }), /HTTP 或 HTTPS/);
 });

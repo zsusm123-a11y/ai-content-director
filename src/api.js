@@ -127,8 +127,6 @@ export async function aiAnalyzeViralVideo(input) {
   const result = await ai("analyzeViralVideo", {
     videoUrl: input.videoUrl,
     title: input.title,
-    duration: input.duration,
-    materials: input.materials,
     analysisFocus: input.analysisFocus,
   });
   return { ...result.data, ai: metadata(result) };
