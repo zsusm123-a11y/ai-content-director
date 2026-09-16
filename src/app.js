@@ -19,6 +19,7 @@ import {
   aiGenerateScript,
   aiOptimizeIdea,
   aiScoreIdea,
+  loadDouyinTrends,
   loadBackend,
   saveBackendState,
 } from "./api.js";
@@ -29,6 +30,8 @@ const toast = document.querySelector("#toast");
 let state = loadState();
 let runtime = { backendReady: false, database: null, ai: { configured: false, model: "本地引擎" } };
 let persistenceTimer = null;
+let trendFeed = { status: "idle", items: [], fetchedAt: null, updatedAt: null, error: "" };
+let trendSelection = new Set();
 
 const routes = [
   ["dashboard", "总览", "⌂"],
@@ -83,6 +86,25 @@ function commit(message) {
 
 function navigate(route) {
   location.hash = `#/${route}`;
+}
+
+async function refreshDouyinTrends() {
+  trendFeed = { ...trendFeed, status: "loading", error: "" };
+  render();
+  try {
+    const feed = await loadDouyinTrends();
+    const available = new Set(feed.items.map((item) => item.title));
+    trendSelection = new Set([...trendSelection].filter((title) => available.has(title)));
+    if (!trendSelection.size) trendSelection = new Set(feed.items.slice(0, 3).map((item) => item.title));
+    trendFeed = { ...feed, status: "ready", error: "" };
+  } catch (error) {
+    trendFeed = { ...trendFeed, status: "error", error: `热点暂时不可用：${error.message}` };
+  }
+  if (currentRoute() === "generate") render();
+}
+
+function ensureDouyinTrends() {
+  if (trendFeed.status === "idle") void refreshDouyinTrends();
 }
 
 function latestScore(idea) {
@@ -202,12 +224,19 @@ function renderGenerate() {
     <div class="split-grid">
       <form id="generate-form" class="panel form-panel sticky-panel">
         <div class="panel-head"><div><p class="eyebrow">生成条件</p><h2>这轮想探索什么</h2></div></div>
+        <section class="trend-picker" aria-label="抖音热点参考">
+          <div class="trend-picker-head"><div><strong>抖音实时热点</strong><small>${trendFeed.updatedAt ? `来源更新时间：${h(trendFeed.updatedAt)}` : "热点标题用于启发，不照搬热点内容"}</small></div><button type="button" class="text-button" data-refresh-trends>${trendFeed.status === "loading" ? "刷新中…" : "刷新热点"}</button></div>
+          ${trendFeed.status === "loading" && !trendFeed.items.length ? `<p class="trend-state">正在读取热点榜…</p>` : ""}
+          ${trendFeed.error ? `<p class="trend-state error">${h(trendFeed.error)}</p>` : ""}
+          ${trendFeed.items.length ? `<div class="trend-list">${trendFeed.items.slice(0, 12).map((item) => `<div class="trend-item"><label><input type="checkbox" name="trendTopics" value="${h(item.title)}" ${trendSelection.has(item.title) ? "checked" : ""}/><span class="trend-rank">${String(item.rank).padStart(2, "0")}</span><span class="trend-title">${h(item.title)}</span></label><a href="${h(item.url)}" target="_blank" rel="noopener noreferrer" aria-label="在抖音搜索：${h(item.title)}" title="在抖音搜索此热点">↗</a></div>`).join("")}</div><small class="trend-attribution">榜单由第三方热点导航聚合，非抖音官方数据；只用于标题检索。${trendFeed.fetchedAt ? `抓取于 ${h(new Date(trendFeed.fetchedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }))}` : ""} · <a href="${h(trendFeed.sourceUrl || "https://douyinhuo.cn/")}" target="_blank" rel="noopener noreferrer">查看来源</a></small>` : trendFeed.status !== "loading" && !trendFeed.error ? `<p class="trend-state">点击“刷新热点”加载当前抖音趋势。</p>` : ""}
+        </section>
         <label>题材关键词<input name="keyword" placeholder="可留空，例如：亲情、职场、汽车" /></label>
         <div class="form-grid two"><label>故事类型${selectField("storyType", ["读取 DNA", ...state.account.storyTypes])}</label><label>表达方式${selectField("format", ["读取 DNA", ...state.account.formats])}</label></div>
         <div class="form-grid two"><label>情绪${selectField("emotion", ["读取 DNA", ...state.account.emotions])}</label><label>商业品类${selectField("commercial", ["无指定", ...state.account.commercialCategories])}</label></div>
         <div class="form-grid two"><label>数量${selectField("count", ["10", "20", "50"], "10")}</label><label>创新程度${selectField("innovation", ["稳妥", "平衡", "激进"], "平衡")}</label></div>
+        <label>爆款视频参考<textarea name="viralExamples" rows="3" placeholder="粘贴抖音视频链接，并写下你观察到的开头钩子、叙事节奏或高赞评论；系统不会自动读取视频内容。"></textarea></label>
         <button class="button primary wide" type="submit">生成结构化选题</button>
-        <p class="form-hint">每条结果包含设定、标签、目标观众、商业品类与视觉记忆点。</p>
+        <p class="form-hint">会结合账号 DNA 和选中的热点生成原创候选。${runtime.ai?.configured ? "配置模型后还会参考你填写的爆款观察" : "本地降级模式仅用热点标题启发，不分析爆款链接"}；热点不会被照搬。</p>
       </form>
       <section class="panel form-panel">
         <div class="panel-head"><div><p class="eyebrow">手动输入</p><h2>评估现有脑洞</h2></div></div>
@@ -334,8 +363,9 @@ async function withAiFallback(progressMessage, aiWork, localWork) {
 }
 
 document.addEventListener("click", async (event) => {
-  const target = event.target.closest("[data-nav],[data-open-idea],[data-close-idea],[data-score-idea],[data-optimize],[data-restore-version],[data-promote],[data-set-status],[data-open-project],[data-close-project],[data-generate-beats],[data-add-beat],[data-delete-beat],[data-confirm-beats],[data-generate-script],[data-export-project],[data-archive-project]");
+  const target = event.target.closest("[data-refresh-trends],[data-nav],[data-open-idea],[data-close-idea],[data-score-idea],[data-optimize],[data-restore-version],[data-promote],[data-set-status],[data-open-project],[data-close-project],[data-generate-beats],[data-add-beat],[data-delete-beat],[data-confirm-beats],[data-generate-script],[data-export-project],[data-archive-project]");
   if (!target) return;
+  if (target.hasAttribute("data-refresh-trends")) { await refreshDouyinTrends(); return; }
   if (target.dataset.nav) navigate(target.dataset.nav);
   if (target.dataset.openIdea) { state.selectedIdeaId = target.dataset.openIdea; commit(); navigate("pool"); }
   if (target.hasAttribute("data-close-idea")) { state.selectedIdeaId = null; commit(); }
@@ -365,6 +395,8 @@ document.addEventListener("submit", async (event) => {
   }
   if (form.id === "generate-form") {
     const options = Object.fromEntries(data);
+    options.trendTopics = data.getAll("trendTopics");
+    trendSelection = new Set(options.trendTopics);
     const result = await withAiFallback(
       "正在生成结构化选题…",
       () => aiGenerateIdeas(state.account, options),
@@ -372,7 +404,7 @@ document.addEventListener("submit", async (event) => {
     );
     const ideas = result.value;
     state.ideas.push(...ideas);
-    ideas.forEach((idea) => track(state, "create_idea", { ideaId: idea.id, source: "AI生成" }));
+    ideas.forEach((idea) => track(state, "create_idea", { ideaId: idea.id, source: idea.source }));
     commit(`已由${engineLabel(result.provider)}生成 ${ideas.length} 条选题`);
     navigate("pool");
   }
@@ -399,6 +431,11 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.matches('input[name="trendTopics"]')) {
+    const title = event.target.value;
+    if (event.target.checked) trendSelection.add(title);
+    else trendSelection.delete(title);
+  }
   if (event.target.matches("[data-status-idea]")) {
     const idea = state.ideas.find((item) => item.id === event.target.dataset.statusIdea);
     if (idea) { idea.status = event.target.value; idea.updatedAt = new Date().toISOString(); commit("状态已更新"); }
@@ -410,7 +447,10 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "idea-search") filterIdeas();
 });
 
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", () => {
+  render();
+  if (currentRoute() === "generate") ensureDouyinTrends();
+});
 
 async function handleScore(id) {
   const idea = state.ideas.find((item) => item.id === id);
@@ -614,6 +654,7 @@ function filterIdeas() {
 }
 
 render();
+if (currentRoute() === "generate") ensureDouyinTrends();
 
 initializeBackend();
 

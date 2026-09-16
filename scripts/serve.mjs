@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 
 import { createStateStore } from "./database.mjs";
 import { aiConfiguration, runAiTask } from "./ai-provider.mjs";
+import { createDouyinTrendService } from "./trends.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 loadEnv(join(root, ".env"));
 
 const port = Number(process.env.PORT || 4173);
 const store = await createStateStore(process.env.DATABASE_PATH || join(root, "data", "ai-content-director.db"));
+const getDouyinTrends = createDouyinTrendService({ endpoint: process.env.DOUYIN_TRENDS_URL || undefined });
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -45,6 +47,10 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && url.pathname === "/api/config") {
     json(response, 200, { ok: true, ai: aiConfiguration(), database: { engine: "sqlite", ready: true } });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/trends/douyin") {
+    json(response, 200, { ok: true, ...(await getDouyinTrends()) });
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/state") {

@@ -40,3 +40,16 @@ test("builds JSON chat-completion requests for structured tasks", () => {
   assert.match(request.messages[0].content, /JSON.*Schema/s);
   assert.equal(request.messages[1].role, "user");
 });
+
+test("adds trend and creator-provided viral observations as generation context", () => {
+  const request = buildRequest("generateIdeas", {
+    options: {
+      trendTopics: ["城市停电后的第7分钟"],
+      viralExamples: "视频链接：example；开头用倒计时留住观众。",
+    },
+  }, { model: "deepseek-v4-flash", maxTokens: 4096 });
+  const systemPrompt = request.messages[0].content;
+  assert.match(systemPrompt, /提炼其中的情绪、冲突/);
+  assert.match(systemPrompt, /不得编造播放量/);
+  assert.match(request.messages[1].content, /开头用倒计时留住观众/);
+});

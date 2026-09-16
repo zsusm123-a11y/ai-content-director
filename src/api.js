@@ -12,6 +12,16 @@ export function saveBackendState(state) {
   return request("/api/state", { method: "PUT", body: JSON.stringify({ state }) });
 }
 
+export function loadDouyinTrends() {
+  return request("/api/trends/douyin").then((result) => ({
+    source: result.source,
+    sourceUrl: result.sourceUrl,
+    updatedAt: result.updatedAt,
+    fetchedAt: result.fetchedAt,
+    items: result.items,
+  }));
+}
+
 export async function aiGenerateIdeas(account, options) {
   const result = await ai("generateIdeas", { account, options });
   const now = new Date().toISOString();
@@ -20,7 +30,7 @@ export async function aiGenerateIdeas(account, options) {
     accountId: account.id,
     title: raw.title,
     logline: raw.logline,
-    source: "AI生成",
+    source: options.trendTopics?.length ? "抖音热点启发" : "AI生成",
     storyType: raw.storyType,
     format: raw.format,
     emotion: raw.emotion,

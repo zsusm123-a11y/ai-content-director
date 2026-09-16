@@ -196,12 +196,15 @@ export async function runAiTask(task, payload) {
 export function buildRequest(task, payload, config = resolveConfiguration(process.env)) {
   const definition = schemas[task];
   if (!definition) throw new Error(`Unknown AI task: ${task}`);
+  const trendGuidance = task === "generateIdeas" && (payload.options?.trendTopics?.length || payload.options?.viralExamples?.trim())
+    ? "本次选题必须参考用户勾选的抖音热点标题和爆款案例观察，再与账号 DNA 交叉筛选。热点只是灵感信号：提炼其中的情绪、冲突、人物关系或视觉形式，转化为原创剧情，不复述新闻事实、不照搬原视频。用户贴入的视频链接不代表你已观看；只依据用户提供的文字观察，不得编造播放量、点赞量或视频细节。每条候选都要尽量说明与热点的关联，并避免强行蹭无关热点。"
+    : "";
   return {
     model: config.model,
     messages: [
       {
         role: "system",
-        content: `${instructions[task]}\n只输出一个有效 JSON 对象，不要输出 Markdown。JSON 必须符合以下 Schema：\n${JSON.stringify(definition.schema)}`,
+        content: `${instructions[task]}${trendGuidance ? `\n${trendGuidance}` : ""}\n只输出一个有效 JSON 对象，不要输出 Markdown。JSON 必须符合以下 Schema：\n${JSON.stringify(definition.schema)}`,
       },
       { role: "user", content: JSON.stringify(payload) },
     ],

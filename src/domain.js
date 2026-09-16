@@ -77,6 +77,7 @@ function includesAny(text, words) {
 
 export function generateIdeas(account, options = {}) {
   const keyword = (options.keyword || "").trim();
+  const trendTopics = Array.isArray(options.trendTopics) ? options.trendTopics.filter((topic) => typeof topic === "string" && topic.trim()) : [];
   const requested = Number(options.count || 10);
   const count = Math.max(1, Math.min(requested, 50));
   const offset = stableHash(`${keyword}${options.innovation || "平衡"}`) % IDEA_SEEDS.length;
@@ -85,23 +86,25 @@ export function generateIdeas(account, options = {}) {
   return Array.from({ length: count }, (_, index) => {
     const seed = IDEA_SEEDS[(offset + index) % IDEA_SEEDS.length];
     const [baseTitle, baseLogline, storyType, format, emotion, commercial, structure] = seed;
-    const title = keyword && !baseTitle.includes(keyword) ? `${keyword}：${baseTitle}` : baseTitle;
+    const trendTopic = trendTopics[index % Math.max(trendTopics.length, 1)];
+    const title = trendTopic ? `${trendTopic}：${baseTitle}` : keyword && !baseTitle.includes(keyword) ? `${keyword}：${baseTitle}` : baseTitle;
+    const logline = trendTopic ? `从抖音热点“${trendTopic}”提炼情绪或冲突，不复述原事件：${baseLogline}` : baseLogline;
     return {
       id: createId("idea"),
       accountId: account.id,
       title,
-      logline: baseLogline,
-      source: "AI生成",
+      logline,
+      source: trendTopic ? "抖音热点启发" : "AI生成",
       storyType: options.storyType || storyType,
       format: options.format || format,
       emotion: options.emotion || emotion,
       targetAudience: options.audience || account.audiences?.[0] || "故事型观众",
       commercialTags: options.commercial ? [options.commercial] : commercial.split(" / "),
-      visualHook: inferVisualHook(baseLogline),
+      visualHook: inferVisualHook(logline),
       preferredStructure: structure,
       status: "待评分",
       scoreHistory: [],
-      versions: [{ version: 1, title, logline: baseLogline, reason: "初始版本", createdAt: now }],
+      versions: [{ version: 1, title, logline, reason: trendTopic ? `抖音热点启发：${trendTopic}` : "初始版本", createdAt: now }],
       createdAt: now,
       updatedAt: now,
     };

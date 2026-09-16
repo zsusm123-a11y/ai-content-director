@@ -27,6 +27,13 @@ test("generates the requested number of structured ideas", () => {
   assert.ok(ideas.every((idea) => idea.status === "待评分" && idea.versions.length === 1));
 });
 
+test("local fallback transforms selected Douyin trend topics into original idea prompts", () => {
+  const ideas = generateIdeas(account, { count: 2, trendTopics: ["城市停电后的第7分钟"] });
+  assert.ok(ideas.every((idea) => idea.source === "抖音热点启发"));
+  assert.ok(ideas.every((idea) => idea.title.startsWith("城市停电后的第7分钟：")));
+  assert.ok(ideas.every((idea) => idea.logline.includes("不复述原事件")));
+});
+
 test("score is the visible sum of ten bounded dimensions", () => {
   const idea = generateIdeas(account, { count: 1 })[0];
   const score = scoreIdea(idea, account);
