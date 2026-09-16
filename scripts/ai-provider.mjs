@@ -122,6 +122,31 @@ const schemas = {
       productionNotes: stringArray,
     }),
   },
+  analyzeViralVideo: {
+    name: "viral_video_shot_breakdown",
+    schema: objectSchema(["summary", "openingHook", "structure", "retentionMechanics", "replicable", "cautions", "shots"], {
+      summary: string,
+      openingHook: string,
+      structure: string,
+      retentionMechanics: stringArray,
+      replicable: stringArray,
+      cautions: stringArray,
+      shots: {
+        type: "array",
+        minItems: 3,
+        maxItems: 16,
+        items: objectSchema(["timeRange", "visual", "shotSizeCamera", "action", "audioText", "narrativeFunction", "retentionPoint"], {
+          timeRange: string,
+          visual: string,
+          shotSizeCamera: string,
+          action: string,
+          audioText: string,
+          narrativeFunction: string,
+          retentionPoint: string,
+        }),
+      },
+    }),
+  },
 };
 
 function objectSchema(required, properties) {
@@ -146,6 +171,7 @@ const instructions = {
   createProject: "你是创意导演。把通过评分的选题转为可执行立项卡，推荐独立的时长等级、制作等级和五类叙事结构。商业母题必须服务故事。严格返回结构化数据。",
   generateBeats: "你是短片编剧。根据立项卡、叙事结构和目标时长生成5到8个节拍，持续升级冲突，避免解释设定。所有duration相加应接近目标秒数。严格返回结构化数据。",
   generateScript: "你是短片编剧和制作导演。严格依据已确认Beat Sheet写正式中文脚本，保留时间段、画面、动作、对白或旁白、声音与制作提示。不要改变已确认的故事结构。严格返回结构化数据。",
+  analyzeViralVideo: "你是短视频导演与剪辑分析师。对用户提供的逐段字幕、画面描述和时间码进行拉片分析，拆成3到16个连续镜头，逐镜说明画面、景别/运镜、动作、声音/字幕、叙事功能和留存作用。分析开场钩子、结构节奏、留存机制、可迁移手法与不可照搬的部分。只依据输入材料；不可声称已观看链接视频，不可编造画面、台词、时间码、播放数据。没有明确时间码时使用“镜头1/镜头2”等顺序编号，并在总结说明分析依据有限。只输出符合Schema的JSON。",
 };
 
 export function aiConfiguration(env = process.env) {

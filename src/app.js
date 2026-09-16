@@ -5,6 +5,7 @@ import {
   applyOptimization,
   beatDuration,
   createManualIdea,
+  createId,
   createProject,
   generateBeats,
   generateIdeas,
@@ -19,6 +20,7 @@ import {
   aiGenerateScript,
   aiOptimizeIdea,
   aiScoreIdea,
+  aiAnalyzeViralVideo,
   loadDouyinTrends,
   loadBackend,
   saveBackendState,
@@ -34,6 +36,7 @@ let trendFeed = { status: "idle", items: [], fetchedAt: null, updatedAt: null, e
 let trendSelection = new Set();
 let selectedIdeaIds = new Set();
 let editingIdeaId = null;
+let viralAnalysisBusy = false;
 
 const routes = [
   ["dashboard", "总览", "⌂"],
@@ -251,8 +254,36 @@ function renderGenerate() {
         </form>
       </section>
     </div>
+    <section class="panel form-panel viral-lab">
+      <div class="panel-head"><div><p class="eyebrow">爆款拆解</p><h2>逐镜拉片分析</h2><p class="page-description">填写视频链接，并提供时间码字幕或画面观察，生成逐镜头拆解。</p></div></div>
+      <div class="notice-box">仅粘贴链接无法观看视频。请把字幕/口播和画面按时间顺序写在下方；模型只分析你提供的材料，不会自动读取抖音视频。</div>
+      <form id="viral-analysis-form" class="viral-analysis-form">
+        <div class="form-grid two"><label>视频标题<input name="title" placeholder="便于回看，例如：30秒讲清一个反转故事" /></label><label>抖音视频链接<input name="videoUrl" type="url" placeholder="https://v.douyin.com/..." required /></label></div>
+        <div class="form-grid two"><label>视频时长（秒）<input name="duration" type="number" min="1" max="600" placeholder="例如 35" /></label><label>分析重点<select name="analysisFocus"><option>完整拉片</option><option>开场钩子与前三秒</option><option>镜头节奏与剪辑</option><option>叙事结构与反转</option><option>字幕、配音与音效</option></select></label></div>
+        <label>时间码字幕 / 画面描述<textarea name="materials" rows="7" minlength="40" maxlength="12000" required placeholder="按顺序粘贴字幕或描述画面，尽量包含时间码、景别、人物动作、字幕/口播和音效。&#10;00:00-00:03 近景：人物盯着镜头说“……”；急促切入，屏幕字幕……&#10;00:03-00:08 中景：……&#10;00:08-00:15 画面转为……"></textarea></label>
+        <div class="form-actions"><small>${runtime.ai?.configured ? `当前模型：${h(providerLabel(runtime.ai.provider))} / ${h(runtime.ai.model)}` : "请先在 .env 配置可用的大模型 API，拉片分析需要模型服务"}</small><button class="button primary" type="submit" ${runtime.ai?.configured ? "" : "disabled"}>${viralAnalysisBusy ? "正在分析…" : "开始拉片分析"}</button></div>
+      </form>
+    </section>
+    ${renderViralAnalyses()}
     <section class="idea-examples"><p class="eyebrow">内容方法</p><h2>好选题先回答三个问题</h2><div class="principle-grid"><article><span>01</span><h3>哪里不正常</h3><p>前三秒就能理解异常规则。</p></article><article><span>02</span><h3>人物会失去什么</h3><p>设定必须逼人物行动和选择。</p></article><article><span>03</span><h3>哪一幕代表全片</h3><p>先锁定视觉记忆点再扩写。</p></article></div></section>
   </section>`;
+}
+
+function renderViralAnalyses() {
+  const analyses = [...(state.viralAnalyses || [])].reverse();
+  if (!analyses.length) return "";
+  return `<section class="viral-results"><div class="panel-head"><div><p class="eyebrow">分析档案</p><h2>已完成的拉片</h2></div></div>${analyses.map((analysis) => `<article class="panel viral-result"><header><div><h3>${h(analysis.title || "未命名视频")}</h3><small>${formatDate(analysis.createdAt)} · ${analysis.ai ? `${h(providerLabel(analysis.ai.provider))} / ${h(analysis.ai.model)}` : "AI分析"}</small></div>${safeHttpUrl(analysis.videoUrl) ? `<a class="button compact secondary" href="${h(safeHttpUrl(analysis.videoUrl))}" target="_blank" rel="noopener noreferrer">打开原视频 ↗</a>` : ""}</header><div class="viral-overview"><div><strong>开场钩子</strong><p>${h(analysis.openingHook)}</p></div><div><strong>整体结构</strong><p>${h(analysis.structure)}</p></div><div><strong>拆解摘要</strong><p>${h(analysis.summary)}</p></div></div><div class="shot-list">${analysis.shots.map((shot, index) => `<article class="shot-card"><div class="shot-time"><span>${String(index + 1).padStart(2, "0")}</span><strong>${h(shot.timeRange)}</strong></div><div class="shot-content"><h4>${h(shot.visual)}</h4><div class="shot-details"><p><strong>景别/运镜：</strong>${h(shot.shotSizeCamera)}</p><p><strong>动作：</strong>${h(shot.action)}</p><p><strong>声音/字幕：</strong>${h(shot.audioText)}</p><p><strong>叙事功能：</strong>${h(shot.narrativeFunction)}</p><p><strong>留存作用：</strong>${h(shot.retentionPoint)}</p></div></div></article>`).join("")}</div><div class="viral-takeaways"><div><strong>留存机制</strong>${renderAnalysisList(analysis.retentionMechanics)}</div><div><strong>可迁移手法</strong>${renderAnalysisList(analysis.replicable)}</div><div><strong>避免照搬</strong>${renderAnalysisList(analysis.cautions)}</div></div></article>`).join("")}</section>`;
+}
+
+function renderAnalysisList(items = []) {
+  return `<ul>${items.map((item) => `<li>${h(item)}</li>`).join("")}</ul>`;
+}
+
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch { return ""; }
 }
 
 function selectField(name, options, selected = "") {
@@ -407,6 +438,32 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
+  if (form.id === "viral-analysis-form") {
+    if (!runtime.ai?.configured) { notify("请先在 .env 配置大模型 API"); return; }
+    viralAnalysisBusy = true;
+    render();
+    try {
+      const input = {
+        title: String(data.get("title") || "").trim(),
+        videoUrl: String(data.get("videoUrl") || "").trim(),
+        duration: String(data.get("duration") || "").trim(),
+        analysisFocus: String(data.get("analysisFocus") || "完整拉片"),
+        materials: String(data.get("materials") || "").trim(),
+      };
+      const analysis = await aiAnalyzeViralVideo(input);
+      const record = { id: createId("analysis"), ...input, ...analysis, createdAt: new Date().toISOString() };
+      state.viralAnalyses ||= [];
+      state.viralAnalyses.push(record);
+      track(state, "analyze_viral_video", { analysisId: record.id, shotCount: record.shots.length });
+      viralAnalysisBusy = false;
+      commit(`拉片分析完成，共拆解 ${record.shots.length} 个镜头`);
+    } catch (error) {
+      viralAnalysisBusy = false;
+      render();
+      notify(`拉片分析失败：${error.message}`);
+    }
+    return;
+  }
   if (form.id === "idea-edit-form") {
     const idea = state.ideas.find((item) => item.id === form.dataset.ideaId);
     if (!idea) return;

@@ -19,6 +19,7 @@ export function defaultState() {
     },
     ideas: [],
     projects: [],
+    viralAnalyses: [],
     events: [],
     selectedIdeaId: null,
     selectedProjectId: null,

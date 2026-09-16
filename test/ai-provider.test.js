@@ -53,3 +53,16 @@ test("adds trend and creator-provided viral observations as generation context",
   assert.match(systemPrompt, /不得编造播放量/);
   assert.match(request.messages[1].content, /开头用倒计时留住观众/);
 });
+
+test("builds a grounded shot-by-shot viral video analysis request", () => {
+  const request = buildRequest("analyzeViralVideo", {
+    videoUrl: "https://v.douyin.com/example/",
+    title: "反转短片",
+    duration: "35",
+    analysisFocus: "镜头节奏与剪辑",
+    materials: "00:00-00:03 近景：人物直视镜头并抛出问题。\n00:03-00:08 切到门外脚步声。\n00:08-00:15 人物发现桌上照片。",
+  }, { model: "deepseek-v4-flash", maxTokens: 4096 });
+  assert.match(request.messages[0].content, /不可声称已观看链接视频/);
+  assert.match(request.messages[0].content, /retentionPoint/);
+  assert.match(request.messages[1].content, /00:03-00:08/);
+});
