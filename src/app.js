@@ -32,6 +32,8 @@ let runtime = { backendReady: false, database: null, ai: { configured: false, mo
 let persistenceTimer = null;
 let trendFeed = { status: "idle", items: [], fetchedAt: null, updatedAt: null, error: "" };
 let trendSelection = new Set();
+let selectedIdeaIds = new Set();
+let editingIdeaId = null;
 
 const routes = [
   ["dashboard", "总览", "⌂"],
@@ -108,7 +110,7 @@ function ensureDouyinTrends() {
 }
 
 function latestScore(idea) {
-  return idea?.scoreHistory?.at(-1) || null;
+  return idea?.scoreStale ? null : idea?.scoreHistory?.at(-1) || null;
 }
 
 function scoreClass(total = 0) {
@@ -260,21 +262,32 @@ function selectField(name, options, selected = "") {
 function renderPool() {
   const status = new URLSearchParams(location.search).get("status") || "全部";
   const ideas = [...state.ideas].sort((a, b) => (latestScore(b)?.total || 0) - (latestScore(a)?.total || 0));
+  const editingIdea = state.ideas.find((idea) => idea.id === editingIdeaId);
   return `<section class="page">
     ${pageHeader("内容资产", "选题池", "把想法放在同一套标准下比较，优先开发真正值得投入的项目。", `<button class="button primary" data-nav="generate">＋ 新建选题</button>`)}
     <div class="toolbar"><div class="search-wrap"><span>⌕</span><input id="idea-search" placeholder="搜索标题、设定或标签" /></div><select id="idea-status-filter"><option>全部</option>${["待评分", "待优化", "已通过", "已立项", "暂缓", "淘汰"].map((item) => `<option ${status === item ? "selected" : ""}>${item}</option>`).join("")}</select><select id="idea-sort"><option value="score">按总分</option><option value="updated">按更新时间</option><option value="commercial">按商业适配</option><option value="series">按系列潜力</option></select></div>
-    <div class="table-card"><div class="idea-table-head"><span>选题</span><span>类型与来源</span><span>当前评分</span><span>状态</span><span></span></div><div id="idea-list">${ideas.length ? ideas.map(renderIdeaRow).join("") : emptyInline("选题池还是空的", "生成一组选题，或手动录入第一个脑洞。", "generate")}</div></div>
+    <div class="bulk-toolbar"><label><input type="checkbox" id="select-visible-ideas" /> 全选当前结果</label><span id="idea-selection-count">已选 ${selectedIdeaIds.size} 条</span><select id="bulk-idea-status" aria-label="批量设置状态"><option value="">批量设置状态…</option>${["待评分", "待优化", "已通过", "已立项", "暂缓", "淘汰"].map((item) => `<option>${item}</option>`).join("")}</select><button class="button compact secondary" data-bulk-status>应用</button><button class="button compact danger-button" data-bulk-delete>删除所选</button></div>
+    <div class="table-card"><div class="idea-table-head"><span></span><span>选题</span><span>类型与来源</span><span>当前评分</span><span>状态</span><span>操作</span></div><div id="idea-list">${ideas.length ? ideas.map(renderIdeaRow).join("") : emptyInline("选题池还是空的", "生成一组选题，或手动录入第一个脑洞。", "generate")}</div></div>
+    ${editingIdea ? renderIdeaEditor(editingIdea) : ""}
   </section>`;
+}
+
+function renderIdeaEditor(idea) {
+  const fieldOptions = (name, values, selected) => `<select name="${name}">${values.map((value) => `<option ${value === selected ? "selected" : ""}>${h(value)}</option>`).join("")}</select>`;
+  const options = (current, values = []) => [...new Set([current, ...values].filter(Boolean))];
+  return `<div class="modal-backdrop" data-editor-backdrop><section class="panel idea-editor" role="dialog" aria-modal="true" aria-labelledby="idea-editor-title"><div class="panel-head"><div><p class="eyebrow">选题池</p><h2 id="idea-editor-title">修改选题</h2></div><button type="button" class="icon-button" data-cancel-edit aria-label="关闭">×</button></div><form id="idea-edit-form" data-idea-id="${h(idea.id)}"><label>标题<input name="title" required maxlength="120" value="${h(idea.title)}" /></label><label>一句话梗概<textarea name="logline" required rows="4" maxlength="1000">${h(idea.logline)}</textarea></label><div class="form-grid two"><label>故事类型${fieldOptions("storyType", options(idea.storyType, state.account.storyTypes), idea.storyType)}</label><label>表达方式${fieldOptions("format", options(idea.format, state.account.formats), idea.format)}</label></div><div class="form-grid two"><label>情绪${fieldOptions("emotion", options(idea.emotion, state.account.emotions), idea.emotion)}</label><label>目标观众${fieldOptions("targetAudience", options(idea.targetAudience, state.account.audiences), idea.targetAudience)}</label></div><div class="form-actions"><button type="button" class="button secondary" data-cancel-edit>取消</button><button class="button primary" type="submit">保存修改</button></div></form></section></div>`;
 }
 
 function renderIdeaRow(idea) {
   const score = latestScore(idea);
-  return `<article class="idea-row" data-idea-row data-search="${h(`${idea.title} ${idea.logline} ${idea.storyType} ${idea.format} ${idea.commercialTags?.join(" ")}`.toLowerCase())}" data-status="${h(idea.status)}" data-score="${score?.total || 0}" data-updated="${h(idea.updatedAt)}" data-commercial="${score?.details.find((item) => item.key === "commercial")?.value || 0}" data-series="${score?.details.find((item) => item.key === "series")?.value || 0}">
+  const linked = state.projects.some((project) => project.ideaId === idea.id);
+  return `<article class="idea-row" data-idea-row data-idea-id="${h(idea.id)}" data-search="${h(`${idea.title} ${idea.logline} ${idea.storyType} ${idea.format} ${idea.commercialTags?.join(" ")}`.toLowerCase())}" data-status="${h(idea.status)}" data-score="${score?.total || 0}" data-updated="${h(idea.updatedAt)}" data-commercial="${score?.details.find((item) => item.key === "commercial")?.value || 0}" data-series="${score?.details.find((item) => item.key === "series")?.value || 0}">
+    <label class="idea-select"><input type="checkbox" data-select-idea="${h(idea.id)}" ${selectedIdeaIds.has(idea.id) ? "checked" : ""} aria-label="选择：${h(idea.title)}" /></label>
     <div class="idea-main"><strong>${h(idea.title)}</strong><p>${h(idea.logline)}</p><div class="tag-row"><span>${h(idea.emotion)}</span><span>${h(idea.targetAudience)}</span>${idea.commercialTags?.slice(0, 2).map((tag) => `<span>${h(tag)}</span>`).join("") || ""}</div></div>
     <div class="idea-meta"><strong>${h(idea.storyType)}</strong><small>${h(idea.format)} · ${h(idea.source)}</small></div>
     <div>${score ? `<button class="score-ring ${scoreClass(score.total)}" data-open-idea="${idea.id}"><strong>${score.total}</strong><small>/100</small></button>` : `<button class="button compact secondary" data-score-idea="${idea.id}">立即评分</button>`}</div>
     <div><select class="status-select" data-status-idea="${idea.id}">${["待评分", "待优化", "已通过", "已立项", "暂缓", "淘汰"].map((item) => `<option ${idea.status === item ? "selected" : ""}>${item}</option>`).join("")}</select></div>
-    <button class="icon-button" title="查看详情" data-open-idea="${idea.id}">→</button>
+    <div class="idea-actions"><button class="icon-button" title="查看详情" data-open-idea="${h(idea.id)}">→</button><button class="icon-button" title="修改选题" data-edit-idea="${h(idea.id)}">✎</button><button class="icon-button danger" title="${linked ? "已立项选题不可删除" : "删除选题"}" data-delete-idea="${h(idea.id)}" ${linked ? "disabled" : ""}>×</button></div>
   </article>`;
 }
 
@@ -363,11 +376,16 @@ async function withAiFallback(progressMessage, aiWork, localWork) {
 }
 
 document.addEventListener("click", async (event) => {
-  const target = event.target.closest("[data-refresh-trends],[data-nav],[data-open-idea],[data-close-idea],[data-score-idea],[data-optimize],[data-restore-version],[data-promote],[data-set-status],[data-open-project],[data-close-project],[data-generate-beats],[data-add-beat],[data-delete-beat],[data-confirm-beats],[data-generate-script],[data-export-project],[data-archive-project]");
+  const target = event.target.closest("[data-refresh-trends],[data-nav],[data-open-idea],[data-close-idea],[data-score-idea],[data-optimize],[data-restore-version],[data-promote],[data-set-status],[data-open-project],[data-close-project],[data-generate-beats],[data-add-beat],[data-delete-beat],[data-confirm-beats],[data-generate-script],[data-export-project],[data-archive-project],[data-edit-idea],[data-delete-idea],[data-bulk-status],[data-bulk-delete],[data-cancel-edit]");
   if (!target) return;
   if (target.hasAttribute("data-refresh-trends")) { await refreshDouyinTrends(); return; }
   if (target.dataset.nav) navigate(target.dataset.nav);
   if (target.dataset.openIdea) { state.selectedIdeaId = target.dataset.openIdea; commit(); navigate("pool"); }
+  if (target.dataset.editIdea) { editingIdeaId = target.dataset.editIdea; render(); }
+  if (target.hasAttribute("data-cancel-edit")) { editingIdeaId = null; render(); }
+  if (target.dataset.deleteIdea) deleteIdeas([target.dataset.deleteIdea]);
+  if (target.hasAttribute("data-bulk-status")) bulkUpdateIdeaStatus();
+  if (target.hasAttribute("data-bulk-delete")) deleteIdeas([...selectedIdeaIds]);
   if (target.hasAttribute("data-close-idea")) { state.selectedIdeaId = null; commit(); }
   if (target.dataset.scoreIdea) await handleScore(target.dataset.scoreIdea);
   if (target.dataset.optimize) await handleOptimize(target.dataset.optimize);
@@ -389,6 +407,19 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
+  if (form.id === "idea-edit-form") {
+    const idea = state.ideas.find((item) => item.id === form.dataset.ideaId);
+    if (!idea) return;
+    const before = { title: idea.title, logline: idea.logline };
+    Object.assign(idea, { title: String(data.get("title")).trim(), logline: String(data.get("logline")).trim(), storyType: data.get("storyType"), format: data.get("format"), emotion: data.get("emotion"), targetAudience: data.get("targetAudience"), updatedAt: new Date().toISOString(), scoreStale: true });
+    if (before.title !== idea.title || before.logline !== idea.logline) {
+      idea.versions ||= [];
+      idea.versions.push({ version: idea.versions.length + 1, title: idea.title, logline: idea.logline, reason: "手动修改", createdAt: idea.updatedAt });
+    }
+    track(state, "edit_idea", { ideaId: idea.id });
+    editingIdeaId = null;
+    commit("选题已修改；评分已标记为过期，请重新评分");
+  }
   if (form.id === "dna-form") {
     state.account = { ...state.account, brandName: data.get("brandName"), slogan: data.get("slogan"), description: data.get("description"), audiences: data.getAll("audiences"), storyTypes: data.getAll("storyTypes"), formats: data.getAll("formats"), emotions: data.getAll("emotions"), commercialCategories: data.getAll("commercialCategories"), productionCapabilities: data.getAll("productionCapabilities"), visualRules: data.get("visualRules"), updatedAt: new Date().toISOString() };
     commit("账号 DNA 已保存");
@@ -431,6 +462,22 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-select-idea]")) {
+    const id = event.target.dataset.selectIdea;
+    if (event.target.checked) selectedIdeaIds.add(id);
+    else selectedIdeaIds.delete(id);
+    updateIdeaSelectionUI();
+  }
+  if (event.target.id === "select-visible-ideas") {
+    const visibleRows = [...document.querySelectorAll("[data-idea-row]")].filter((row) => !row.hidden);
+    visibleRows.forEach((row) => {
+      const checkbox = row.querySelector("[data-select-idea]");
+      checkbox.checked = event.target.checked;
+      if (event.target.checked) selectedIdeaIds.add(checkbox.dataset.selectIdea);
+      else selectedIdeaIds.delete(checkbox.dataset.selectIdea);
+    });
+    updateIdeaSelectionUI();
+  }
   if (event.target.matches('input[name="trendTopics"]')) {
     const title = event.target.value;
     if (event.target.checked) trendSelection.add(title);
@@ -463,6 +510,7 @@ async function handleScore(id) {
   );
   const score = result.value;
   idea.scoreHistory.push(score);
+  idea.scoreStale = false;
   idea.status = score.total >= 80 ? "已通过" : "待优化";
   idea.updatedAt = score.createdAt;
   state.selectedIdeaId = id;
@@ -641,6 +689,50 @@ function handleExport(id) {
   notify("项目文本已导出");
 }
 
+function updateIdeaSelectionUI() {
+  const count = document.querySelector("#idea-selection-count");
+  if (count) count.textContent = `已选 ${selectedIdeaIds.size} 条`;
+  const rows = [...document.querySelectorAll("[data-idea-row]")].filter((row) => !row.hidden);
+  const selectAll = document.querySelector("#select-visible-ideas");
+  if (selectAll) {
+    const checked = rows.filter((row) => selectedIdeaIds.has(row.dataset.ideaId)).length;
+    selectAll.checked = rows.length > 0 && checked === rows.length;
+    selectAll.indeterminate = checked > 0 && checked < rows.length;
+  }
+}
+
+function bulkUpdateIdeaStatus() {
+  const status = document.querySelector("#bulk-idea-status")?.value;
+  if (!status || !selectedIdeaIds.size) { notify("请先选择选题并指定状态"); return; }
+  let updated = 0;
+  state.ideas.forEach((idea) => {
+    if (!selectedIdeaIds.has(idea.id) || idea.status === "已立项") return;
+    idea.status = status;
+    idea.updatedAt = new Date().toISOString();
+    updated += 1;
+  });
+  track(state, "bulk_update_idea_status", { status, count: updated });
+  selectedIdeaIds.clear();
+  commit(`已批量更新 ${updated} 条选题状态`);
+}
+
+function deleteIdeas(ids) {
+  const requested = new Set(ids);
+  if (!requested.size) { notify("请先选择要删除的选题"); return; }
+  const linkedIds = new Set(state.projects.map((project) => project.ideaId));
+  const deletable = state.ideas.filter((idea) => requested.has(idea.id) && !linkedIds.has(idea.id));
+  const blocked = requested.size - deletable.length;
+  if (!deletable.length) { notify("已立项选题不能删除，以免影响项目档案"); return; }
+  const message = `确定删除 ${deletable.length} 条选题吗？此操作不可撤销。${blocked ? `另有 ${blocked} 条已立项选题将保留。` : ""}`;
+  if (!window.confirm(message)) return;
+  const deletedIds = new Set(deletable.map((idea) => idea.id));
+  deletedIds.forEach((ideaId) => track(state, "delete_idea", { ideaId }));
+  state.ideas = state.ideas.filter((idea) => !deletedIds.has(idea.id));
+  selectedIdeaIds = new Set([...selectedIdeaIds].filter((ideaId) => !deletedIds.has(ideaId)));
+  if (deletedIds.has(state.selectedIdeaId)) state.selectedIdeaId = null;
+  commit(`已删除 ${deletable.length} 条选题${blocked ? `，保留 ${blocked} 条已立项选题` : ""}`);
+}
+
 function filterIdeas() {
   const search = document.querySelector("#idea-search")?.value.toLowerCase() || "";
   const status = document.querySelector("#idea-status-filter")?.value || "全部";
@@ -649,6 +741,7 @@ function filterIdeas() {
   if (!list) return;
   const rows = [...list.querySelectorAll("[data-idea-row]")];
   rows.forEach((row) => { row.hidden = !row.dataset.search.includes(search) || (status !== "全部" && row.dataset.status !== status); });
+  updateIdeaSelectionUI();
   const field = sort === "updated" ? "updated" : sort;
   rows.sort((a, b) => field === "updated" ? b.dataset.updated.localeCompare(a.dataset.updated) : Number(b.dataset[field]) - Number(a.dataset[field])).forEach((row) => list.append(row));
 }
