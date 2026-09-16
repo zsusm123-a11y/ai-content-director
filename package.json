@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "dev": "node --watch scripts/serve.mjs"
+  },
+  "dependencies": {
+    "sql.js": "1.13.0"
   }
 }

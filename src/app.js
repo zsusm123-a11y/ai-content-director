@@ -12,11 +12,23 @@ import {
   projectToText,
   scoreIdea,
 } from "./domain.js";
+import {
+  aiCreateProject,
+  aiGenerateBeats,
+  aiGenerateIdeas,
+  aiGenerateScript,
+  aiOptimizeIdea,
+  aiScoreIdea,
+  loadBackend,
+  saveBackendState,
+} from "./api.js";
 import { loadState, saveState, track } from "./store.js";
 
 const app = document.querySelector("#app");
 const toast = document.querySelector("#toast");
 let state = loadState();
+let runtime = { backendReady: false, database: null, ai: { configured: false, model: "本地引擎" } };
+let persistenceTimer = null;
 
 const routes = [
   ["dashboard", "总览", "⌂"],
@@ -48,6 +60,14 @@ function notify(message) {
 
 function commit(message) {
   saveState(state);
+  clearTimeout(persistenceTimer);
+  persistenceTimer = setTimeout(() => {
+    saveBackendState(state).then(() => {
+      runtime.backendReady = true;
+    }).catch(() => {
+      runtime.backendReady = false;
+    });
+  }, 80);
   render();
   if (message) notify(message);
 }
@@ -77,7 +97,7 @@ function render() {
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">A</span><div><strong>AI Content</strong><small>Director</small></div></div>
       <nav>${routes.map(([key, label, icon]) => `<a href="#/${key}" class="nav-link ${route === key ? "active" : ""}"><span>${icon}</span>${label}</a>`).join("")}</nav>
-      <div class="sidebar-note"><span class="pulse"></span><div><strong>本地决策引擎</strong><small>自动保存 · 数据仅在本机</small></div></div>
+      <div class="sidebar-note"><span class="pulse ${runtime.ai?.configured ? "online" : "fallback"}"></span><div><strong>${runtime.ai?.configured ? h(runtime.ai.model) : "本地降级引擎"}</strong><small>${runtime.backendReady ? "SQLite 已连接 · 自动保存" : "浏览器存储 · 等待后端"}</small></div></div>
     </aside>
     <main class="main"><div class="topbar"><span>${h(state.account.brandName || "未命名账号")}</span><span class="topbar-date">${new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric" }).format(new Date())}</span></div>${renderRoute(route)}</main>
   </div>`;
@@ -229,7 +249,7 @@ function renderEvaluation() {
     <button class="back-button" data-close-idea>← 返回选题池</button>
     ${pageHeader("P3 评分与 P4 优化", idea.title, idea.logline, `<span class="status-badge">${h(idea.status)}</span>`)}
     ${score ? `<div class="evaluation-grid">
-      <section class="score-summary panel"><div class="big-score ${scoreClass(score.total)}"><strong>${score.total}</strong><span>/ 100</span></div><div><p class="eyebrow">一句话判断</p><h2>${h(score.verdict)}</h2><p>强项：${h(score.diagnosis.strengths.join("、"))}。${h(score.diagnosis.risk)}</p>${previous ? `<div class="change-summary"><p class="delta ${score.delta >= 0 ? "positive" : "negative"}">较上一版 ${score.delta >= 0 ? "+" : ""}${score.delta} 分</p>${score.changes.length ? `<div class="change-list">${score.changes.map((item) => `<span>${h(item.label)} ${item.delta > 0 ? "+" : ""}${item.delta}</span>`).join("")}</div>` : `<span class="no-change">各维度暂未变化，可继续优化核心短板。</span>`}</div>` : ""}</div></section>
+      <section class="score-summary panel"><div class="big-score ${scoreClass(score.total)}"><strong>${score.total}</strong><span>/ 100</span></div><div><p class="eyebrow">一句话判断</p><h2>${h(score.verdict)}</h2><p>强项：${h(score.diagnosis.strengths.join("、"))}。${h(score.diagnosis.risk)}</p>${score.ai ? `<span class="engine-badge">OpenAI · ${h(score.ai.model)}</span>` : `<span class="engine-badge local">本地可解释引擎</span>`}${previous ? `<div class="change-summary"><p class="delta ${score.delta >= 0 ? "positive" : "negative"}">较上一版 ${score.delta >= 0 ? "+" : ""}${score.delta} 分</p>${score.changes.length ? `<div class="change-list">${score.changes.map((item) => `<span>${h(item.label)} ${item.delta > 0 ? "+" : ""}${item.delta}</span>`).join("")}</div>` : `<span class="no-change">各维度暂未变化，可继续优化核心短板。</span>`}</div>` : ""}</div></section>
       <section class="panel score-details"><div class="panel-head"><div><p class="eyebrow">10维公开评分</p><h2>分数从哪里来</h2></div><button class="button compact secondary" data-score-idea="${idea.id}">重新评分</button></div>${score.details.map((detail) => `<article class="dimension"><div class="dimension-head"><span>${h(detail.label)}</span><strong>${detail.value}<small>/${detail.max}</small></strong></div><div class="bar"><i style="width:${Math.round(detail.value / detail.max * 100)}%"></i></div><p>${h(detail.reason)}</p></article>`).join("")}</section>
       <section class="panel optimize-panel"><div class="panel-head"><div><p class="eyebrow">优化建议</p><h2>先改短板，再重评</h2></div></div><div class="optimization-list">${score.optimizations.map((item, index) => `<article><span>0${index + 1}</span><div><h3>${h(item.title)}</h3><p>${h(item.description)}</p></div><button class="button compact light" data-optimize="${h(item.id)}">应用并重评</button></article>`).join("")}</div></section>
       <section class="panel version-panel"><div class="panel-head"><div><p class="eyebrow">版本历史</p><h2>可查看、可回退</h2></div></div><div class="timeline">${[...(idea.versions || [])].reverse().map((version) => `<article><span>V${version.version}</span><div><strong>${h(version.reason)}</strong><p>${h(version.logline)}</p><small>${formatDate(version.createdAt)}</small></div>${version.version !== idea.versions.length ? `<button class="text-button" data-restore-version="${version.version}">恢复</button>` : ""}</article>`).join("")}</div></section>
@@ -291,29 +311,42 @@ function formatDate(value) {
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-document.addEventListener("click", (event) => {
+async function withAiFallback(progressMessage, aiWork, localWork) {
+  notify(progressMessage);
+  if (runtime.ai?.configured) {
+    try {
+      return { value: await aiWork(), provider: "openai" };
+    } catch (error) {
+      console.warn("OpenAI request failed; using local fallback", error);
+      runtime.lastAiError = error.message;
+    }
+  }
+  return { value: localWork(), provider: "local" };
+}
+
+document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-nav],[data-open-idea],[data-close-idea],[data-score-idea],[data-optimize],[data-restore-version],[data-promote],[data-set-status],[data-open-project],[data-close-project],[data-generate-beats],[data-add-beat],[data-delete-beat],[data-confirm-beats],[data-generate-script],[data-export-project],[data-archive-project]");
   if (!target) return;
   if (target.dataset.nav) navigate(target.dataset.nav);
   if (target.dataset.openIdea) { state.selectedIdeaId = target.dataset.openIdea; commit(); navigate("pool"); }
   if (target.hasAttribute("data-close-idea")) { state.selectedIdeaId = null; commit(); }
-  if (target.dataset.scoreIdea) handleScore(target.dataset.scoreIdea);
-  if (target.dataset.optimize) handleOptimize(target.dataset.optimize);
+  if (target.dataset.scoreIdea) await handleScore(target.dataset.scoreIdea);
+  if (target.dataset.optimize) await handleOptimize(target.dataset.optimize);
   if (target.dataset.restoreVersion) handleRestore(Number(target.dataset.restoreVersion));
-  if (target.dataset.promote) handlePromote(target.dataset.promote);
+  if (target.dataset.promote) await handlePromote(target.dataset.promote);
   if (target.dataset.setStatus) updateSelectedIdeaStatus(target.dataset.setStatus);
   if (target.dataset.openProject) { state.selectedProjectId = target.dataset.openProject; commit(); navigate("projects"); }
   if (target.hasAttribute("data-close-project")) { state.selectedProjectId = null; commit(); }
-  if (target.hasAttribute("data-generate-beats")) handleGenerateBeats();
+  if (target.hasAttribute("data-generate-beats")) await handleGenerateBeats();
   if (target.hasAttribute("data-add-beat")) handleAddBeat();
   if (target.dataset.deleteBeat) handleDeleteBeat(target.dataset.deleteBeat);
   if (target.hasAttribute("data-confirm-beats")) handleConfirmBeats();
-  if (target.hasAttribute("data-generate-script")) handleGenerateScript();
+  if (target.hasAttribute("data-generate-script")) await handleGenerateScript();
   if (target.dataset.exportProject) handleExport(target.dataset.exportProject);
   if (target.dataset.archiveProject) handleArchive(target.dataset.archiveProject);
 });
 
-document.addEventListener("submit", (event) => {
+document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
@@ -323,22 +356,32 @@ document.addEventListener("submit", (event) => {
   }
   if (form.id === "generate-form") {
     const options = Object.fromEntries(data);
-    const ideas = generateIdeas(state.account, options);
+    const result = await withAiFallback(
+      "正在生成结构化选题…",
+      () => aiGenerateIdeas(state.account, options),
+      () => generateIdeas(state.account, options),
+    );
+    const ideas = result.value;
     state.ideas.push(...ideas);
     ideas.forEach((idea) => track(state, "create_idea", { ideaId: idea.id, source: "AI生成" }));
-    commit(`已生成 ${ideas.length} 条选题并加入选题池`);
+    commit(`已由${result.provider === "openai" ? "真实大模型" : "本地引擎"}生成 ${ideas.length} 条选题`);
     navigate("pool");
   }
   if (form.id === "manual-form") {
     const idea = createManualIdea(state.account, Object.fromEntries(data));
-    const score = scoreIdea(idea, state.account);
+    const result = await withAiFallback(
+      "正在评估想法…",
+      () => aiScoreIdea(idea, state.account),
+      () => scoreIdea(idea, state.account),
+    );
+    const score = result.value;
     idea.scoreHistory.push(score);
     idea.status = score.total >= 80 ? "已通过" : "待优化";
     state.ideas.push(idea);
     state.selectedIdeaId = idea.id;
     track(state, "create_idea", { ideaId: idea.id, source: "手动" });
     track(state, "score_idea", { ideaId: idea.id, total: score.total });
-    commit("想法已保存并完成评分");
+    commit(`想法已保存并由${result.provider === "openai" ? "真实大模型" : "本地引擎"}完成评分`);
     navigate("pool");
   }
   if (form.id === "project-form") saveProjectForm(form, data);
@@ -360,28 +403,43 @@ document.addEventListener("input", (event) => {
 
 window.addEventListener("hashchange", render);
 
-function handleScore(id) {
+async function handleScore(id) {
   const idea = state.ideas.find((item) => item.id === id);
   if (!idea) return;
   const previous = latestScore(idea);
-  const score = scoreIdea(idea, state.account, previous);
+  const result = await withAiFallback(
+    "正在执行十维评分…",
+    () => aiScoreIdea(idea, state.account, previous),
+    () => scoreIdea(idea, state.account, previous),
+  );
+  const score = result.value;
   idea.scoreHistory.push(score);
   idea.status = score.total >= 80 ? "已通过" : "待优化";
   idea.updatedAt = score.createdAt;
   state.selectedIdeaId = id;
   track(state, previous ? "rescore_after_optimize" : "score_idea", { ideaId: id, total: score.total, delta: score.delta });
-  commit(`评分完成：${score.total} 分`);
+  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}评分完成：${score.total} 分`);
 }
 
-function handleOptimize(optimizationId) {
+async function handleOptimize(optimizationId) {
   const index = state.ideas.findIndex((item) => item.id === state.selectedIdeaId);
   if (index < 0) return;
   const idea = state.ideas[index];
   const score = latestScore(idea);
   const optimization = score?.optimizations.find((item) => item.id === optimizationId);
   if (!optimization) return;
-  const optimized = applyOptimization(idea, optimization);
-  const rescored = scoreIdea(optimized, state.account, score);
+  const optimizationResult = await withAiFallback(
+    "正在优化并重新评分…",
+    () => aiOptimizeIdea(idea, state.account, optimization),
+    () => applyOptimization(idea, optimization),
+  );
+  const optimized = optimizationResult.value;
+  const scoreResult = await withAiFallback(
+    "正在比较优化前后分数…",
+    () => aiScoreIdea(optimized, state.account, score),
+    () => scoreIdea(optimized, state.account, score),
+  );
+  const rescored = scoreResult.value;
   optimized.scoreHistory = [...idea.scoreHistory, rescored];
   optimized.status = rescored.total >= 80 ? "已通过" : "待优化";
   state.ideas[index] = optimized;
@@ -400,10 +458,16 @@ function handleRestore(versionNumber) {
   commit(`已恢复 V${versionNumber}，历史版本仍保留`);
 }
 
-function handlePromote(id) {
+async function handlePromote(id) {
   const idea = state.ideas.find((item) => item.id === id);
   if (!idea || latestScore(idea)?.total < 80 || state.projects.some((project) => project.ideaId === id)) return;
-  const project = createProject(idea);
+  const localProject = createProject(idea);
+  const result = await withAiFallback(
+    "正在生成立项摘要与推荐…",
+    () => aiCreateProject(idea, state.account, localProject),
+    () => localProject,
+  );
+  const project = result.value;
   state.projects.push(project);
   idea.status = "已立项";
   idea.updatedAt = new Date().toISOString();
@@ -431,14 +495,19 @@ function saveProjectForm(form, data) {
   commit("立项卡已保存；结构变更后请重新确认 Beat")
 }
 
-function handleGenerateBeats() {
+async function handleGenerateBeats() {
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
   if (!project) return;
-  project.beats = generateBeats(project);
+  const result = await withAiFallback(
+    "正在生成 Beat Sheet…",
+    () => aiGenerateBeats(project, state.account),
+    () => generateBeats(project),
+  );
+  project.beats = result.value;
   project.beatsConfirmed = false;
   project.updatedAt = new Date().toISOString();
   track(state, "generate_beats", { projectId: project.id, count: project.beats.length });
-  commit(`已生成 ${project.beats.length} 个 Beat`);
+  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}已生成 ${project.beats.length} 个 Beat`);
 }
 
 function handleAddBeat() {
@@ -476,14 +545,19 @@ function handleConfirmBeats() {
   commit("Beat Sheet 已确认，可以生成正式脚本");
 }
 
-function handleGenerateScript() {
+async function handleGenerateScript() {
   const project = state.projects.find((item) => item.id === state.selectedProjectId);
   if (!project?.beatsConfirmed) { notify("请先确认 Beat Sheet"); return; }
-  const script = generateScript(project);
+  const result = await withAiFallback(
+    "正在生成正式脚本…",
+    () => aiGenerateScript(project, state.account),
+    () => generateScript(project),
+  );
+  const script = result.value;
   project.scriptVersions.push(script);
   project.updatedAt = script.createdAt;
   track(state, "generate_script", { projectId: project.id, version: script.version });
-  commit(`正式脚本 V${script.version} 已生成`);
+  commit(`${result.provider === "openai" ? "真实大模型" : "本地引擎"}脚本 V${script.version} 已生成`);
 }
 
 function saveScriptForm(form, data) {
@@ -531,3 +605,25 @@ function filterIdeas() {
 }
 
 render();
+
+initializeBackend();
+
+async function initializeBackend() {
+  try {
+    const backend = await loadBackend();
+    runtime = { backendReady: true, database: backend.config.database, ai: backend.config.ai };
+    if (backend.state) {
+      const local = loadState();
+      state = { ...local, ...backend.state, account: backend.state.account || local.account };
+      saveState(state);
+    } else {
+      await saveBackendState(state);
+    }
+    render();
+  } catch (error) {
+    console.warn("Backend unavailable; continuing with browser storage", error);
+    runtime.backendReady = false;
+    render();
+    notify("后端暂不可用，当前改动仍保存在浏览器");
+  }
+}

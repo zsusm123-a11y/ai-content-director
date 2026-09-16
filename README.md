@@ -4,9 +4,10 @@ AI Content Director 是一个面向 AI 短视频创作者、编导与小型内�
 
 ## 本地运行
 
-需要 Node.js 18 或更高版本，无需安装依赖。
+需要 Node.js 18 或更高版本。首次运行先安装依赖：
 
 ```powershell
+npm install
 npm start
 ```
 
@@ -33,8 +34,36 @@ npm test
 
 ## 实现说明
 
-当前版本使用浏览器 `localStorage`，并以内置、可解释的本地决策引擎模拟 AI 链路，便于在没有密钥和后端服务时完整验收产品流程。`src/domain.js` 中的生成、评分、优化、结构推荐和脚本函数均可替换为服务端大模型调用，页面与数据流无需重写。
+当前版本包含本地 Node.js 后端、SQLite 数据库和 OpenAI Responses API 集成。账号、选题、评分、项目、Beat、脚本和埋点会写入 `data/ai-content-director.db`。浏览器 `localStorage` 保留为后端不可用时的安全降级。
+
+### 配置真实大模型
+
+复制环境变量示例：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`，填入 OpenAI API Key：
+
+```dotenv
+OPENAI_API_KEY=你的_API_Key
+OPENAI_MODEL=gpt-5.6-luna
+```
+
+`.env` 已被 Git 忽略，不会进入提交。请不要把 API Key 写进前端代码、截图或聊天记录。可在 [OpenAI API Dashboard](https://platform.openai.com/api-keys) 创建和管理密钥。
+
+未配置密钥、网络不可用或模型调用失败时，系统自动使用 `src/domain.js` 中的本地可解释引擎，完整工作流仍可继续。
+
+### 后端接口
+
+- `GET /api/health`：数据库与大模型配置状态
+- `GET /api/state`：读取完整工作区
+- `PUT /api/state`：事务式保存完整工作区
+- `POST /api/ai/:task`：结构化大模型任务
+
+默认数据库路径可用 `DATABASE_PATH` 修改，默认模型可用 `OPENAI_MODEL` 修改。
 
 ## 数据与隐私
 
-所有内容只保存在当前浏览器。清除浏览器站点数据会移除账号 DNA、选题与项目，请先使用项目页的导出功能留档。
+内容默认保存在本机 SQLite 数据库，不会跨用户展示。API 请求仅在用户主动执行生成、评分、优化、立项、Beat 或脚本操作时发送到配置的模型服务。项目页仍支持文本导出留档。
